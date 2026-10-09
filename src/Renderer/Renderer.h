@@ -67,6 +67,7 @@ private:
     VkDescriptorPool             m_descriptorPool          {VK_NULL_HANDLE};
     VkDescriptorSet              m_descriptorSet           {VK_NULL_HANDLE};
     // textures
+    uint32_t                     m_nextTextureSlot         {};
     VkSampler                    m_textureSampler          {VK_NULL_HANDLE};
     std::vector<VkImage>         m_textureImages           {};
     std::vector<VmaAllocation>   m_textureAllocations      {};

@@ -243,8 +243,7 @@ uint32_t Renderer::uploadTexture(const std::string &path, VkFormat format) {
         "Error: failed to create texture image view");
 
     // Write into bindless array
-    static uint32_t currFreeSlot{};
-    uint32_t slot{currFreeSlot++};
+    uint32_t slot{m_nextTextureSlot++};
     VkDescriptorImageInfo descriptorImageInfo{
         .sampler     = m_textureSampler,
         .imageView   = imageView,
