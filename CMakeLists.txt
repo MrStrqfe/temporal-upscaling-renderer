@@ -90,6 +90,7 @@ set(SOURCE
     src/main.cpp
     src/Window/Window.cpp
     src/Input/Input.cpp
+    src/Camera/Camera.cpp
 )
 
 set(LIBS
