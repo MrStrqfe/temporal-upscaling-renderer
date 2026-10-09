@@ -75,11 +75,15 @@ endfunction()
 compile_slang_shader(forward vertexMain vertex)
 compile_slang_shader(forward fragmentMain fragment)
 
+# TAA compute shader
+compile_slang_shader(taa main compute)
+
 # Compile all shaders — only lists .spv outputs when slangc is available
 if (SLANGC_PATH)
     add_custom_target(compile_shaders DEPENDS
         ${SHADER_OUTPUT_DIR}/forward_vertex.spv
         ${SHADER_OUTPUT_DIR}/forward_fragment.spv
+        ${SHADER_OUTPUT_DIR}/taa_compute.spv
     )
 else()
     add_custom_target(compile_shaders)
@@ -94,6 +98,8 @@ set(SOURCE
     src/Renderer/Renderer.cpp
     src/ModelLoader/ModelLoader.cpp
     src/MotionVectors/MotionVectors.cpp
+    src/PostProcess/PostProcessPipeline.cpp
+    src/PostProcess/TAAPass.cpp
     src/App/App.cpp
 )
 

@@ -3,6 +3,8 @@
 #include "Config.h"
 #include "Window/Window.h"
 #include "Camera/Camera.h"
+#include "PostProcess/PostProcessPipeline.h"
+#include "MotionVectors/MotionVectors.h"
 #include "volk.h"
 #include "vk_mem_alloc.h"
 #include "stb_image.h"
@@ -36,6 +38,10 @@ uint32_t          Renderer::getQueueIndex()       const { return m_queueIndex; }
 VkCommandPool     Renderer::getCommandPool()      const { return m_commandPool; }
 VkExtent2D        Renderer::getSwapchainExtent()  const { return m_swapchainExtent; }
 VkFormat          Renderer::getSwapchainFormat()  const { return m_swapchainSurfaceFormat.format; }
+VkImageView       Renderer::getColorImageView()   const { return m_colorImageView; }
+VkImage           Renderer::getColorImage()       const { return m_colorImage; }
+VkImageView       Renderer::getDepthImageView()   const { return m_depthImageView; }
+VkImage           Renderer::getDepthImage()       const { return m_depthImage; }
 
 void Renderer::setVelocityTarget(VkImageView velocityImageView, VkImage velocityImage) {
     m_velocityImageView = velocityImageView;
@@ -53,6 +59,7 @@ void Renderer::initVulkan(Window &window) {
     createAllocator();
     createSwapchain(window);
     createImageViews();
+    createColorResources();
     createDepthResources();
     createDescriptorSet();
     createTextureSampler();
@@ -555,7 +562,7 @@ void Renderer::createSwapchain(Window &window) {
         .imageColorSpace       = m_swapchainSurfaceFormat.colorSpace,
         .imageExtent           = m_swapchainExtent,
         .imageArrayLayers      = 1,
-        .imageUsage            = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .imageUsage            = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         .imageSharingMode      = VK_SHARING_MODE_EXCLUSIVE,
         .queueFamilyIndexCount = 0,
         .pQueueFamilyIndices   = nullptr,
@@ -595,6 +602,48 @@ void Renderer::createImageViews() {
     }
 }
 
+// ─── Offscreen color resources ───────────────────────────────────────────────
+
+void Renderer::createColorResources() {
+    VkImageCreateInfo imageCreateInfo{
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext         = nullptr,
+        .flags         = {},
+        .imageType     = VK_IMAGE_TYPE_2D,
+        .format        = VK_FORMAT_R16G16B16A16_SFLOAT,
+        .extent        = {m_swapchainExtent.width, m_swapchainExtent.height, 1},
+        .mipLevels     = 1,
+        .arrayLayers   = 1,
+        .samples       = VK_SAMPLE_COUNT_1_BIT,
+        .tiling        = VK_IMAGE_TILING_OPTIMAL,
+        .usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
+    };
+
+    VmaAllocationCreateInfo allocationCreateInfo{
+        .usage = VMA_MEMORY_USAGE_AUTO
+    };
+
+    checkResult(vmaCreateImage(m_allocator, &imageCreateInfo, &allocationCreateInfo,
+        &m_colorImage, &m_colorImageAllocation, nullptr),
+        "Error: failed to create offscreen color image");
+
+    VkImageViewCreateInfo imageViewCreateInfo{
+        .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .pNext            = nullptr,
+        .flags            = {},
+        .image            = m_colorImage,
+        .viewType         = VK_IMAGE_VIEW_TYPE_2D,
+        .format           = VK_FORMAT_R16G16B16A16_SFLOAT,
+        .components       = {},
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
+    };
+
+    checkResult(vkCreateImageView(m_device, &imageViewCreateInfo, nullptr, &m_colorImageView),
+        "Error: failed to create offscreen color image view");
+}
+
 // ─── Depth resources ─────────────────────────────────────────────────────────
 
 void Renderer::createDepthResources() {
@@ -611,7 +660,7 @@ void Renderer::createDepthResources() {
         .arrayLayers   = 1,
         .samples       = VK_SAMPLE_COUNT_1_BIT,
         .tiling        = VK_IMAGE_TILING_OPTIMAL,
-        .usage         = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .usage         = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
     };
@@ -873,7 +922,7 @@ void Renderer::createGraphicsPipeline() {
 
     // Dynamic rendering (no render pass object)
     std::array<VkFormat, 2> colorAttachmentFormats{
-        m_swapchainSurfaceFormat.format,
+        VK_FORMAT_R16G16B16A16_SFLOAT,
         VK_FORMAT_R16G16_SFLOAT
     };
 
@@ -1007,7 +1056,7 @@ void Renderer::createBuffer(VkBuffer &buffer, VkDeviceSize size, VkBufferUsageFl
 
 // ─── drawFrame ────────────────────────────────────────────────────────────────
 
-void Renderer::drawFrame(Window &window, Camera &camera) {
+void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *postProcess, MotionVectors *motionVectors) {
     // Wait for this frame slot's fence
     vkWaitForFences(m_device, 1, &m_renderWaitFences[m_frameIndex], VK_TRUE, UINT64_MAX);
 
@@ -1038,7 +1087,7 @@ void Renderer::drawFrame(Window &window, Camera &camera) {
     };
     vkBeginCommandBuffer(cmd, &beginInfo);
 
-    // Transition swapchain image + velocity image: UNDEFINED → COLOR_ATTACHMENT_OPTIMAL
+    // Transition offscreen color + velocity image: UNDEFINED → COLOR_ATTACHMENT_OPTIMAL
     VkImageMemoryBarrier2 colorToAttach{
         .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext               = nullptr,
@@ -1050,7 +1099,7 @@ void Renderer::drawFrame(Window &window, Camera &camera) {
         .newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image               = m_swapchainImages[imageIndex],
+        .image               = m_colorImage,
         .subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
     };
 
@@ -1069,7 +1118,7 @@ void Renderer::drawFrame(Window &window, Camera &camera) {
         .subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
     };
 
-    // Batch swapchain color + velocity barriers together
+    // Batch offscreen color + velocity barriers together
     std::array<VkImageMemoryBarrier2, 2> preRenderBarriers{colorToAttach, velocityToAttach};
     VkDependencyInfo colorBarrierDep{
         .sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -1102,7 +1151,7 @@ void Renderer::drawFrame(Window &window, Camera &camera) {
     };
     vkCmdPipelineBarrier2(cmd, &depthBarrierDep);
 
-    // Begin dynamic rendering
+    // Begin dynamic rendering — render to offscreen color target
     VkClearValue clearColor{.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}};
     VkClearValue clearVelocity{.color = {.float32 = {0.0f, 0.0f, 0.0f, 0.0f}}};
     VkClearValue clearDepth{.depthStencil = {1.0f, 0}};
@@ -1110,7 +1159,7 @@ void Renderer::drawFrame(Window &window, Camera &camera) {
     VkRenderingAttachmentInfo colorAttachment{
         .sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .pNext       = nullptr,
-        .imageView   = m_swapchainImageViews[imageIndex],
+        .imageView   = m_colorImageView,
         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp     = VK_ATTACHMENT_STORE_OP_STORE,
@@ -1133,7 +1182,7 @@ void Renderer::drawFrame(Window &window, Camera &camera) {
         .imageView   = m_depthImageView,
         .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
         .loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp     = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .storeOp     = VK_ATTACHMENT_STORE_OP_STORE,
         .clearValue  = clearDepth
     };
 
@@ -1199,15 +1248,137 @@ void Renderer::drawFrame(Window &window, Camera &camera) {
 
     vkCmdEndRendering(cmd);
 
-    // Transition swapchain image: COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC
+    // ─── Post-process: transition forward pass outputs to shader read ────────
+    // Color: COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+    // Velocity: COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+    // Depth: DEPTH_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+    std::array<VkImageMemoryBarrier2, 3> postForwardBarriers{{
+        {
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask       = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstStageMask        = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .dstAccessMask       = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = m_colorImage,
+            .subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
+        },
+        {
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask       = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstStageMask        = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .dstAccessMask       = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = m_velocityImage,
+            .subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
+        },
+        {
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask        = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            .srcAccessMask       = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            .dstStageMask        = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .dstAccessMask       = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            .newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = m_depthImage,
+            .subresourceRange    = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1}
+        }
+    }};
+    VkDependencyInfo postForwardDep{
+        .sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = static_cast<uint32_t>(postForwardBarriers.size()),
+        .pImageMemoryBarriers    = postForwardBarriers.data()
+    };
+    vkCmdPipelineBarrier2(cmd, &postForwardDep);
+
+    // ─── Execute TAA post-process ────────────────────────────────────────────
+    PostProcessMode mode{PostProcessMode::TAA};
+    VkImage blitSourceImage{};
+    if (postProcess != nullptr && motionVectors != nullptr) {
+        postProcess->execute(cmd, *this, mode,
+                             m_colorImageView, m_depthImageView, motionVectors->getImageView());
+        blitSourceImage = postProcess->getOutputImage();
+    } else {
+        // Fallback: use offscreen color directly
+        blitSourceImage = m_colorImage;
+    }
+
+    // ─── Blit TAA output (or color) → swapchain ─────────────────────────────
+    // Transition output: GENERAL → TRANSFER_SRC_OPTIMAL (after compute write)
+    // Transition swapchain: UNDEFINED → TRANSFER_DST_OPTIMAL
+    std::array<VkImageMemoryBarrier2, 2> preBlitBarriers{{
+        {
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask        = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .srcAccessMask       = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            .dstStageMask        = VK_PIPELINE_STAGE_2_BLIT_BIT,
+            .dstAccessMask       = VK_ACCESS_2_TRANSFER_READ_BIT,
+            .oldLayout           = (postProcess != nullptr && motionVectors != nullptr) ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = blitSourceImage,
+            .subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
+        },
+        {
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask        = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            .srcAccessMask       = VK_ACCESS_2_NONE,
+            .dstStageMask        = VK_PIPELINE_STAGE_2_BLIT_BIT,
+            .dstAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = m_swapchainImages[imageIndex],
+            .subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
+        }
+    }};
+    VkDependencyInfo preBlitDep{
+        .sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = static_cast<uint32_t>(preBlitBarriers.size()),
+        .pImageMemoryBarriers    = preBlitBarriers.data()
+    };
+    vkCmdPipelineBarrier2(cmd, &preBlitDep);
+
+    // Blit
+    VkImageBlit2 blitRegion{
+        .sType          = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
+        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .srcOffsets     = {{0, 0, 0}, {static_cast<int32_t>(m_swapchainExtent.width), static_cast<int32_t>(m_swapchainExtent.height), 1}},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstOffsets     = {{0, 0, 0}, {static_cast<int32_t>(m_swapchainExtent.width), static_cast<int32_t>(m_swapchainExtent.height), 1}}
+    };
+    VkBlitImageInfo2 blitInfo{
+        .sType          = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2,
+        .srcImage       = blitSourceImage,
+        .srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .dstImage       = m_swapchainImages[imageIndex],
+        .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .regionCount    = 1,
+        .pRegions       = &blitRegion,
+        .filter         = VK_FILTER_LINEAR
+    };
+    vkCmdBlitImage2(cmd, &blitInfo);
+
+    // Transition swapchain image: TRANSFER_DST_OPTIMAL → PRESENT_SRC_KHR
     VkImageMemoryBarrier2 colorToPresent{
         .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext               = nullptr,
-        .srcStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .srcAccessMask       = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        .srcStageMask        = VK_PIPELINE_STAGE_2_BLIT_BIT,
+        .srcAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
         .dstStageMask        = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
         .dstAccessMask       = VK_ACCESS_2_NONE,
-        .oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         .newLayout           = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -1292,12 +1463,19 @@ void Renderer::recreateSwapchain(Window &window) {
     swapchainCleanup();
     createSwapchain(window);
     createImageViews();
+    createColorResources();
     createDepthResources();
 }
 
 // ─── Cleanup ─────────────────────────────────────────────────────────────────
 
 void Renderer::swapchainCleanup() {
+    vkDestroyImageView(m_device, m_colorImageView, nullptr);
+    vmaDestroyImage(m_allocator, m_colorImage, m_colorImageAllocation);
+    m_colorImageView       = VK_NULL_HANDLE;
+    m_colorImage           = VK_NULL_HANDLE;
+    m_colorImageAllocation = VK_NULL_HANDLE;
+
     vkDestroyImageView(m_device, m_depthImageView, nullptr);
     vmaDestroyImage(m_allocator, m_depthImage, m_depthImageAllocation);
     m_depthImageView       = VK_NULL_HANDLE;

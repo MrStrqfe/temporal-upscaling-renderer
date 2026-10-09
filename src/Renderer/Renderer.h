@@ -6,13 +6,15 @@
 #include <string>
 class Window;
 class Camera;
+class PostProcessPipeline;
+class MotionVectors;
 struct Vertex;
 struct Material;
 
 class Renderer {
 public:
     void initVulkan(Window &window);
-    void drawFrame(Window &window, Camera &camera);
+    void drawFrame(Window &window, Camera &camera, PostProcessPipeline *postProcess, MotionVectors *motionVectors);
     void uploadModel(std::vector<Vertex> &vertices, std::vector<uint32_t> &indices);
     uint32_t uploadTexture(const std::string &path, VkFormat format);
     void uploadMaterials(std::vector<Material> &materials);
@@ -24,6 +26,10 @@ public:
     VkCommandPool getCommandPool() const;
     VkExtent2D getSwapchainExtent() const;
     VkFormat getSwapchainFormat() const;
+    VkImageView getColorImageView() const;
+    VkImage getColorImage() const;
+    VkImageView getDepthImageView() const;
+    VkImage getDepthImage() const;
     void setVelocityTarget(VkImageView velocityImageView, VkImage velocityImage);
     void cleanup();
 
@@ -41,6 +47,10 @@ private:
     VkSurfaceFormatKHR           m_swapchainSurfaceFormat  {};
     std::vector<VkImage>         m_swapchainImages         {};
     std::vector<VkImageView>     m_swapchainImageViews     {};
+    // offscreen color target (forward pass renders here for post-processing)
+    VkImage                      m_colorImage              {VK_NULL_HANDLE};
+    VkImageView                  m_colorImageView          {VK_NULL_HANDLE};
+    VmaAllocation                m_colorImageAllocation    {VK_NULL_HANDLE};
     // depth testing
     VkImage                      m_depthImage              {VK_NULL_HANDLE};
     VkImageView                  m_depthImageView          {VK_NULL_HANDLE};
@@ -94,6 +104,7 @@ private:
     void createSurface(Window &window);
     void createSwapchain(Window &window);
     void createImageViews();
+    void createColorResources();
     void createDepthResources();
     void createGraphicsPipeline();
     void createCommandPool();

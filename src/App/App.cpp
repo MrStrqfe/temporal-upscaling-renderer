@@ -19,6 +19,7 @@ void App::run() {
 
     m_motionVectors.init(m_renderer);
     m_renderer.setVelocityTarget(m_motionVectors.getImageView(), m_motionVectors.getImage());
+    m_postProcess.init(m_renderer);
 
     m_modelLoader.loadModel(m_vertices, m_indices, m_materials, m_renderer);
     m_renderer.uploadModel(m_vertices, m_indices);
@@ -39,13 +40,14 @@ void App::mainLoop() {
         m_camera.processKeyboard(m_window, m_deltaTime);
         m_camera.update();
 
-        m_renderer.drawFrame(m_window, m_camera);
+        m_renderer.drawFrame(m_window, m_camera, &m_postProcess, &m_motionVectors);
 
         m_camera.incrementFrameIndex();
     }
 }
 
 void App::cleanup() {
+    m_postProcess.cleanup(m_renderer);
     m_motionVectors.cleanup(m_renderer);
     m_renderer.cleanup();
     m_window.cleanup();

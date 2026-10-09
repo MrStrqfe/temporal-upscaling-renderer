@@ -5,6 +5,7 @@
 #include "Camera/Camera.h"
 #include "ModelLoader/ModelLoader.h"
 #include "MotionVectors/MotionVectors.h"
+#include "PostProcess/PostProcessPipeline.h"
 #include "Material.h"
 #include "Vertex.h"
 #include <cstdint>
@@ -21,6 +22,7 @@ private:
     Camera                m_camera{};
     ModelLoader           m_modelLoader{};
     MotionVectors         m_motionVectors{};
+    PostProcessPipeline   m_postProcess{};
     std::vector<Vertex>   m_vertices{};
     std::vector<uint32_t> m_indices{};
     std::vector<Material> m_materials{};
