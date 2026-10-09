@@ -24,7 +24,7 @@ void ModelLoader::loadModel(std::vector<Vertex> &vertices, std::vector<uint32_t>
         aiProcess_FlipUVs
     )};
 
-    if (scene == nullptr || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
+    if (scene == nullptr || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) != 0 || !scene->mRootNode) {
         std::string error{"Assimp error: "};
         error += importer.GetErrorString();
         error += "\n";
