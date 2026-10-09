@@ -1,0 +1,13 @@
+#pragma once
+#include "volk.h"
+#include <glm/glm.hpp>
+
+struct PushConstants {
+    VkDeviceAddress materialBufferAddress;
+    VkDeviceAddress vertexBufferAddress;
+    alignas(16) glm::mat4 model;
+    alignas(16) glm::mat4 view;
+    alignas(16) glm::mat4 projection;
+    alignas(16) glm::mat4 prevViewProjection;
+    alignas(16) glm::vec2 jitterOffset;
+};

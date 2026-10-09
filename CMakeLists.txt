@@ -91,6 +91,7 @@ set(SOURCE
     src/Window/Window.cpp
     src/Input/Input.cpp
     src/Camera/Camera.cpp
+    src/Renderer/Renderer.cpp
 )
 
 set(LIBS
