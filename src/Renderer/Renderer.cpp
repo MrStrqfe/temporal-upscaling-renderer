@@ -1300,16 +1300,19 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
     };
     vkCmdPipelineBarrier2(cmd, &postForwardDep);
 
-    // ─── Execute TAA post-process ────────────────────────────────────────────
+    // ─── Execute post-process ─────────────────────────────────────────────
     PostProcessMode mode{PostProcessMode::TAA};
     VkImage blitSourceImage{};
-    if (postProcess != nullptr && motionVectors != nullptr) {
+    VkImageLayout blitSourceLayout{};
+    if (postProcess != nullptr && motionVectors != nullptr && mode != PostProcessMode::Native) {
         postProcess->execute(cmd, *this, mode,
                              m_colorImageView, m_depthImageView, motionVectors->getImageView());
         blitSourceImage = postProcess->getOutputImage();
+        blitSourceLayout = VK_IMAGE_LAYOUT_GENERAL;
     } else {
-        // Fallback: use offscreen color directly
+        // Native mode or no post-process: blit offscreen color directly
         blitSourceImage = m_colorImage;
+        blitSourceLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 
     // ─── Blit TAA output (or color) → swapchain ─────────────────────────────
@@ -1318,11 +1321,15 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
     std::array<VkImageMemoryBarrier2, 2> preBlitBarriers{{
         {
             .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            .srcAccessMask       = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            .srcStageMask        = (blitSourceLayout == VK_IMAGE_LAYOUT_GENERAL)
+                                     ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                                     : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask       = (blitSourceLayout == VK_IMAGE_LAYOUT_GENERAL)
+                                     ? VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                                     : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
             .dstStageMask        = VK_PIPELINE_STAGE_2_BLIT_BIT,
             .dstAccessMask       = VK_ACCESS_2_TRANSFER_READ_BIT,
-            .oldLayout           = (postProcess != nullptr && motionVectors != nullptr) ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .oldLayout           = blitSourceLayout,
             .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,

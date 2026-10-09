@@ -83,26 +83,27 @@ void TAAPass::init(Renderer &renderer, VkExtent2D extent) {
     vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_pipeline);
     vkDestroyShaderModule(m_device, shaderModule, nullptr);
 
-    // Descriptor pool & set -- no UPDATE_AFTER_BIND needed since we update before binding
+    // Descriptor pool & sets — one per frame in flight to avoid update/use race
     VkDescriptorPoolSize poolSizes[]{
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4},
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2}
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 * Config::maxFramesInFlight},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * Config::maxFramesInFlight}
     };
     VkDescriptorPoolCreateInfo poolInfo{
         .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets       = 1,
+        .maxSets       = static_cast<uint32_t>(Config::maxFramesInFlight),
         .poolSizeCount = 2,
         .pPoolSizes    = poolSizes
     };
     vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &m_descriptorPool);
 
+    VkDescriptorSetLayout layouts[2]{m_descriptorSetLayout, m_descriptorSetLayout};
     VkDescriptorSetAllocateInfo allocInfo{
         .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool     = m_descriptorPool,
-        .descriptorSetCount = 1,
-        .pSetLayouts        = &m_descriptorSetLayout
+        .descriptorSetCount = static_cast<uint32_t>(Config::maxFramesInFlight),
+        .pSetLayouts        = layouts
     };
-    vkAllocateDescriptorSets(m_device, &allocInfo, &m_descriptorSet);
+    vkAllocateDescriptorSets(m_device, &allocInfo, m_descriptorSets);
 }
 
 void TAAPass::execute(VkCommandBuffer cmd,
@@ -111,15 +112,16 @@ void TAAPass::execute(VkCommandBuffer cmd,
                        VkImageView outputTarget, VkImage outputImage,
                        VkImageView historyWriteTarget, VkImage historyWriteImage,
                        VkExtent2D extent) {
-    // Transition history read to GENERAL, output and history write to GENERAL
+    // Transition history read to GENERAL (preserve contents on frame 2+),
+    // output and history write to GENERAL
     VkImageMemoryBarrier2 barriers[]{
         {
             .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            .srcAccessMask       = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            .srcStageMask        = m_historyValid ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            .srcAccessMask       = m_historyValid ? VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT : VK_ACCESS_2_NONE,
             .dstStageMask        = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             .dstAccessMask       = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
+            .oldLayout           = m_historyValid ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
             .newLayout           = VK_IMAGE_LAYOUT_GENERAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -160,7 +162,9 @@ void TAAPass::execute(VkCommandBuffer cmd,
     };
     vkCmdPipelineBarrier2(cmd, &depInfo);
 
-    // Update descriptor set with current frame's images
+    // Update this frame's descriptor set (one per frame-in-flight to avoid race)
+    VkDescriptorSet currentSet{m_descriptorSets[m_frameIndex]};
+
     VkDescriptorImageInfo colorInfo{m_nearestSampler, colorInput, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo velocityInfo{m_nearestSampler, velocityInput, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo depthInfo{m_nearestSampler, depthInput, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -169,12 +173,12 @@ void TAAPass::execute(VkCommandBuffer cmd,
     VkDescriptorImageInfo historyWriteInfo{VK_NULL_HANDLE, historyWriteTarget, VK_IMAGE_LAYOUT_GENERAL};
 
     VkWriteDescriptorSet writes[]{
-        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, m_descriptorSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &colorInfo, nullptr, nullptr},
-        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, m_descriptorSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &velocityInfo, nullptr, nullptr},
-        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, m_descriptorSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depthInfo, nullptr, nullptr},
-        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, m_descriptorSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &historyInfo, nullptr, nullptr},
-        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, m_descriptorSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &outputInfo, nullptr, nullptr},
-        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, m_descriptorSet, 5, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &historyWriteInfo, nullptr, nullptr},
+        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, currentSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &colorInfo, nullptr, nullptr},
+        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, currentSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &velocityInfo, nullptr, nullptr},
+        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, currentSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depthInfo, nullptr, nullptr},
+        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, currentSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &historyInfo, nullptr, nullptr},
+        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, currentSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &outputInfo, nullptr, nullptr},
+        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, currentSet, 5, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &historyWriteInfo, nullptr, nullptr},
     };
     vkUpdateDescriptorSets(m_device, 6, writes, 0, nullptr);
 
@@ -182,11 +186,14 @@ void TAAPass::execute(VkCommandBuffer cmd,
     vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(float), &blendFactor);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, &m_descriptorSet, 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, &currentSet, 0, nullptr);
 
     uint32_t groupsX{(extent.width  + 7) / 8};
     uint32_t groupsY{(extent.height + 7) / 8};
     vkCmdDispatch(cmd, groupsX, groupsY, 1);
+
+    m_historyValid = true;
+    m_frameIndex = (m_frameIndex + 1) % Config::maxFramesInFlight;
 }
 
 void TAAPass::cleanup(Renderer &renderer) {

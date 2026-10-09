@@ -20,7 +20,9 @@ private:
     VkPipelineLayout     m_pipelineLayout{VK_NULL_HANDLE};
     VkDescriptorSetLayout m_descriptorSetLayout{VK_NULL_HANDLE};
     VkDescriptorPool     m_descriptorPool{VK_NULL_HANDLE};
-    VkDescriptorSet      m_descriptorSet {VK_NULL_HANDLE};
     VkSampler            m_nearestSampler{VK_NULL_HANDLE};
     VkSampler            m_linearSampler {VK_NULL_HANDLE};
+    VkDescriptorSet      m_descriptorSets[2]{VK_NULL_HANDLE, VK_NULL_HANDLE};
+    uint32_t             m_frameIndex    {0};
+    bool                 m_historyValid  {false};
 };
