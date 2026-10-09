@@ -789,26 +789,13 @@ void Renderer::createGraphicsPipeline() {
         .primitiveRestartEnable = VK_FALSE
     };
 
-    VkViewport viewport{
-        .x        = 0.0f,
-        .y        = 0.0f,
-        .width    = static_cast<float>(m_swapchainExtent.width),
-        .height   = static_cast<float>(m_swapchainExtent.height),
-        .minDepth = 0.0f,
-        .maxDepth = 1.0f
-    };
-    VkRect2D scissor{
-        .offset = {0, 0},
-        .extent = m_swapchainExtent
-    };
-
     VkPipelineViewportStateCreateInfo viewportState{
         .sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
         .pNext         = nullptr,
         .viewportCount = 1,
-        .pViewports    = &viewport,
+        .pViewports    = nullptr,
         .scissorCount  = 1,
-        .pScissors     = &scissor
+        .pScissors     = nullptr
     };
 
     VkPipelineRasterizationStateCreateInfo rasterizationState{
@@ -882,6 +869,18 @@ void Renderer::createGraphicsPipeline() {
         .depthAttachmentFormat   = VK_FORMAT_D32_SFLOAT
     };
 
+    std::array<VkDynamicState, 2> dynamicStates = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR
+    };
+
+    VkPipelineDynamicStateCreateInfo dynamicStateInfo{
+        .sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .pNext             = nullptr,
+        .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
+        .pDynamicStates    = dynamicStates.data()
+    };
+
     VkGraphicsPipelineCreateInfo pipelineCreateInfo{
         .sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .pNext               = &pipelineRenderingCreateInfo,
@@ -895,7 +894,7 @@ void Renderer::createGraphicsPipeline() {
         .pMultisampleState   = &multisampleState,
         .pDepthStencilState  = &depthStencilState,
         .pColorBlendState    = &colorBlendState,
-        .pDynamicState       = nullptr,
+        .pDynamicState       = &dynamicStateInfo,
         .layout              = m_pipelineLayout,
         .renderPass          = VK_NULL_HANDLE,
         .subpass             = 0
@@ -1108,6 +1107,23 @@ void Renderer::drawFrame(Window &window, Camera &camera) {
     // Only draw if a model has been uploaded
     if (m_indexCount > 0) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphicsPipeline);
+
+        VkViewport viewport{
+            .x        = 0.0f,
+            .y        = 0.0f,
+            .width    = static_cast<float>(m_swapchainExtent.width),
+            .height   = static_cast<float>(m_swapchainExtent.height),
+            .minDepth = 0.0f,
+            .maxDepth = 1.0f
+        };
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+        VkRect2D scissor{
+            .offset = {0, 0},
+            .extent = m_swapchainExtent
+        };
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
             m_pipelineLayout, 0, 1, &m_descriptorSet, 0, nullptr);
 
