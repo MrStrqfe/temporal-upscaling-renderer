@@ -1,4 +1,5 @@
 #include "App.h"
+#include "Config.h"
 
 void App::run() {
     m_window.initWindow();
@@ -11,6 +12,7 @@ void App::run() {
         camera->processMouseMovement(static_cast<float>(xPos), static_cast<float>(yPos));
     });
 
+    m_renderer.setInternalResolution(Config::upscaleRatio);
     m_renderer.initVulkan(m_window);
     m_camera.setAspectRatio(
         static_cast<float>(m_renderer.getSwapchainExtent().width) /

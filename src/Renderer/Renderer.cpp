@@ -48,6 +48,17 @@ void Renderer::setVelocityTarget(VkImageView velocityImageView, VkImage velocity
     m_velocityImage     = velocityImage;
 }
 
+void Renderer::setInternalResolution(float ratio) {
+    m_internalResolutionRatio = ratio;
+}
+
+VkExtent2D Renderer::getInternalExtent() const {
+    return {
+        static_cast<uint32_t>(m_swapchainExtent.width  * m_internalResolutionRatio),
+        static_cast<uint32_t>(m_swapchainExtent.height * m_internalResolutionRatio)
+    };
+}
+
 // ─── Public init ─────────────────────────────────────────────────────────────
 
 void Renderer::initVulkan(Window &window) {
@@ -605,13 +616,15 @@ void Renderer::createImageViews() {
 // ─── Offscreen color resources ───────────────────────────────────────────────
 
 void Renderer::createColorResources() {
+    VkExtent2D renderExtent{getInternalExtent()};
+
     VkImageCreateInfo imageCreateInfo{
         .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .pNext         = nullptr,
         .flags         = {},
         .imageType     = VK_IMAGE_TYPE_2D,
         .format        = VK_FORMAT_R16G16B16A16_SFLOAT,
-        .extent        = {m_swapchainExtent.width, m_swapchainExtent.height, 1},
+        .extent        = {renderExtent.width, renderExtent.height, 1},
         .mipLevels     = 1,
         .arrayLayers   = 1,
         .samples       = VK_SAMPLE_COUNT_1_BIT,
@@ -648,6 +661,7 @@ void Renderer::createColorResources() {
 
 void Renderer::createDepthResources() {
     VkFormat depthFormat{VK_FORMAT_D32_SFLOAT};
+    VkExtent2D renderExtent{getInternalExtent()};
 
     VkImageCreateInfo imageCreateInfo{
         .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -655,7 +669,7 @@ void Renderer::createDepthResources() {
         .flags         = {},
         .imageType     = VK_IMAGE_TYPE_2D,
         .format        = depthFormat,
-        .extent        = {m_swapchainExtent.width, m_swapchainExtent.height, 1},
+        .extent        = {renderExtent.width, renderExtent.height, 1},
         .mipLevels     = 1,
         .arrayLayers   = 1,
         .samples       = VK_SAMPLE_COUNT_1_BIT,
@@ -1188,10 +1202,12 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
 
     std::array<VkRenderingAttachmentInfo, 2> colorAttachments{colorAttachment, velocityAttachment};
 
+    VkExtent2D renderExtent{getInternalExtent()};
+
     VkRenderingInfo renderingInfo{
         .sType                = VK_STRUCTURE_TYPE_RENDERING_INFO,
         .pNext                = nullptr,
-        .renderArea           = {.offset = {0, 0}, .extent = m_swapchainExtent},
+        .renderArea           = {.offset = {0, 0}, .extent = renderExtent},
         .layerCount           = 1,
         .colorAttachmentCount = static_cast<uint32_t>(colorAttachments.size()),
         .pColorAttachments    = colorAttachments.data(),
@@ -1207,8 +1223,8 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
         VkViewport viewport{
             .x        = 0.0f,
             .y        = 0.0f,
-            .width    = static_cast<float>(m_swapchainExtent.width),
-            .height   = static_cast<float>(m_swapchainExtent.height),
+            .width    = static_cast<float>(renderExtent.width),
+            .height   = static_cast<float>(renderExtent.height),
             .minDepth = 0.0f,
             .maxDepth = 1.0f
         };
@@ -1216,7 +1232,7 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
 
         VkRect2D scissor{
             .offset = {0, 0},
-            .extent = m_swapchainExtent
+            .extent = renderExtent
         };
         vkCmdSetScissor(cmd, 0, 1, &scissor);
 
@@ -1301,7 +1317,7 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
     vkCmdPipelineBarrier2(cmd, &postForwardDep);
 
     // ─── Execute post-process ─────────────────────────────────────────────
-    PostProcessMode mode{PostProcessMode::TAA};
+    PostProcessMode mode{PostProcessMode::Upscale};
     VkImage blitSourceImage{};
     VkImageLayout blitSourceLayout{};
     if (postProcess != nullptr && motionVectors != nullptr && mode != PostProcessMode::Native) {

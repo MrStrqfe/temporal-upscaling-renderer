@@ -5,8 +5,21 @@
 void PostProcessPipeline::init(Renderer &renderer) {
     createHistoryBuffers(renderer);
     createOutputBuffer(renderer);
+    createSharpenOutputBuffer(renderer);
     createSamplers(renderer);
     m_taaPass.init(renderer, renderer.getSwapchainExtent());
+
+    VkExtent2D swapExtent{renderer.getSwapchainExtent()};
+    VkExtent2D internalExtent{
+        static_cast<uint32_t>(swapExtent.width  * Config::upscaleRatio),
+        static_cast<uint32_t>(swapExtent.height * Config::upscaleRatio)
+    };
+    m_upscalePass.init(renderer, internalExtent, swapExtent);
+    m_sharpenPass.init(renderer, swapExtent);
+
+    // Default final output points to the main output image
+    m_finalOutputImage     = m_outputImage;
+    m_finalOutputImageView = m_outputImageView;
 }
 
 void PostProcessPipeline::execute(VkCommandBuffer cmd, Renderer &renderer, PostProcessMode mode,
@@ -29,15 +42,51 @@ void PostProcessPipeline::execute(VkCommandBuffer cmd, Renderer &renderer, PostP
                           renderer.getSwapchainExtent());
 
         m_historyIndex = writeHistory;
+
+        m_finalOutputImage     = m_outputImage;
+        m_finalOutputImageView = m_outputImageView;
+    }
+
+    if (mode == PostProcessMode::Upscale) {
+        uint32_t readHistory  = m_historyIndex;
+        uint32_t writeHistory = 1 - m_historyIndex;
+
+        VkExtent2D outputExtent{renderer.getSwapchainExtent()};
+        VkExtent2D internalExtent{
+            static_cast<uint32_t>(outputExtent.width  * Config::upscaleRatio),
+            static_cast<uint32_t>(outputExtent.height * Config::upscaleRatio)
+        };
+
+        // Step 1: UpscalePass — low-res inputs → full-res output + history write
+        m_upscalePass.execute(cmd, colorInput, depthInput, velocityInput,
+                              m_historyImageViews[readHistory],
+                              m_historyImages[readHistory],
+                              m_outputImageView, m_outputImage,
+                              m_historyImageViews[writeHistory],
+                              m_historyImages[writeHistory],
+                              outputExtent);
+
+        m_historyIndex = writeHistory;
+
+        // Step 2: SharpenPass — full-res upscale output → sharpened final output
+        // SharpenPass internally transitions m_outputImage GENERAL→SHADER_READ_ONLY_OPTIMAL
+        // and m_sharpenOutputImage UNDEFINED→GENERAL
+        m_sharpenPass.execute(cmd,
+                              m_outputImageView, m_outputImage,
+                              m_sharpenOutputImageView, m_sharpenOutputImage,
+                              outputExtent);
+
+        m_finalOutputImage     = m_sharpenOutputImage;
+        m_finalOutputImageView = m_sharpenOutputImageView;
     }
 }
 
 VkImageView PostProcessPipeline::getOutputImageView() const {
-    return m_outputImageView;
+    return m_finalOutputImageView;
 }
 
 VkImage PostProcessPipeline::getOutputImage() const {
-    return m_outputImage;
+    return m_finalOutputImage;
 }
 
 void PostProcessPipeline::createHistoryBuffers(Renderer &renderer) {
@@ -112,6 +161,41 @@ void PostProcessPipeline::createOutputBuffer(Renderer &renderer) {
     vkCreateImageView(renderer.getDevice(), &viewInfo, nullptr, &m_outputImageView);
 }
 
+void PostProcessPipeline::createSharpenOutputBuffer(Renderer &renderer) {
+    VkExtent2D extent{renderer.getSwapchainExtent()};
+
+    VkImageCreateInfo imageCreateInfo{
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext         = nullptr,
+        .flags         = {},
+        .imageType     = VK_IMAGE_TYPE_2D,
+        .format        = VK_FORMAT_R16G16B16A16_SFLOAT,
+        .extent        = {extent.width, extent.height, 1},
+        .mipLevels     = 1,
+        .arrayLayers   = 1,
+        .samples       = VK_SAMPLE_COUNT_1_BIT,
+        .tiling        = VK_IMAGE_TILING_OPTIMAL,
+        .usage         = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
+    };
+
+    VmaAllocationCreateInfo allocationCreateInfo{.usage = VMA_MEMORY_USAGE_AUTO};
+
+    vmaCreateImage(renderer.getAllocator(), &imageCreateInfo, &allocationCreateInfo,
+        &m_sharpenOutputImage, &m_sharpenOutputAllocation, nullptr);
+
+    VkImageViewCreateInfo viewInfo{
+        .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .pNext            = nullptr,
+        .image            = m_sharpenOutputImage,
+        .viewType         = VK_IMAGE_VIEW_TYPE_2D,
+        .format           = VK_FORMAT_R16G16B16A16_SFLOAT,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
+    };
+    vkCreateImageView(renderer.getDevice(), &viewInfo, nullptr, &m_sharpenOutputImageView);
+}
+
 void PostProcessPipeline::createSamplers(Renderer &renderer) {
     VkSamplerCreateInfo nearestSamplerInfo{
         .sType     = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -130,9 +214,15 @@ void PostProcessPipeline::createSamplers(Renderer &renderer) {
 
 void PostProcessPipeline::cleanup(Renderer &renderer) {
     m_taaPass.cleanup(renderer);
+    m_upscalePass.cleanup(renderer);
+    m_sharpenPass.cleanup(renderer);
 
     vkDestroySampler(renderer.getDevice(), m_nearestSampler, nullptr);
     vkDestroySampler(renderer.getDevice(), m_linearSampler, nullptr);
+
+    vkDestroyImageView(renderer.getDevice(), m_sharpenOutputImageView, nullptr);
+    vmaDestroyImage(renderer.getAllocator(), m_sharpenOutputImage, m_sharpenOutputAllocation);
+
     vkDestroyImageView(renderer.getDevice(), m_outputImageView, nullptr);
     vmaDestroyImage(renderer.getAllocator(), m_outputImage, m_outputAllocation);
 

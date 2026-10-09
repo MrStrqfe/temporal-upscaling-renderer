@@ -3,7 +3,7 @@
 #include "Config.h"
 
 void MotionVectors::init(Renderer &renderer) {
-    VkExtent2D extent{renderer.getSwapchainExtent()};
+    VkExtent2D extent{renderer.getInternalExtent()};
 
     VkImageCreateInfo imageCreateInfo{
         .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,

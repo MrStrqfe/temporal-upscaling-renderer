@@ -31,6 +31,8 @@ public:
     VkImageView getDepthImageView() const;
     VkImage getDepthImage() const;
     void setVelocityTarget(VkImageView velocityImageView, VkImage velocityImage);
+    void setInternalResolution(float ratio);
+    VkExtent2D getInternalExtent() const;
     void cleanup();
 
 private:
@@ -91,6 +93,8 @@ private:
     // velocity render target (owned by MotionVectors, set via setVelocityTarget)
     VkImageView                  m_velocityImageView       {VK_NULL_HANDLE};
     VkImage                      m_velocityImage           {VK_NULL_HANDLE};
+    // internal resolution (1.0 = native, < 1.0 = upscale mode)
+    float                        m_internalResolutionRatio {1.0f};
     // extensions
     std::vector<const char *>    m_requiredDeviceExtensions{
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,

@@ -78,12 +78,18 @@ compile_slang_shader(forward fragmentMain fragment)
 # TAA compute shader
 compile_slang_shader(taa main compute)
 
+# Upscale and sharpen compute shaders
+compile_slang_shader(upscale main compute)
+compile_slang_shader(sharpen main compute)
+
 # Compile all shaders — only lists .spv outputs when slangc is available
 if (SLANGC_PATH)
     add_custom_target(compile_shaders DEPENDS
         ${SHADER_OUTPUT_DIR}/forward_vertex.spv
         ${SHADER_OUTPUT_DIR}/forward_fragment.spv
         ${SHADER_OUTPUT_DIR}/taa_compute.spv
+        ${SHADER_OUTPUT_DIR}/upscale_compute.spv
+        ${SHADER_OUTPUT_DIR}/sharpen_compute.spv
     )
 else()
     add_custom_target(compile_shaders)
@@ -100,6 +106,8 @@ set(SOURCE
     src/MotionVectors/MotionVectors.cpp
     src/PostProcess/PostProcessPipeline.cpp
     src/PostProcess/TAAPass.cpp
+    src/PostProcess/UpscalePass.cpp
+    src/PostProcess/SharpenPass.cpp
     src/App/App.cpp
 )
 
