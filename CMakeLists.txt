@@ -92,6 +92,8 @@ set(SOURCE
     src/Input/Input.cpp
     src/Camera/Camera.cpp
     src/Renderer/Renderer.cpp
+    src/ModelLoader/ModelLoader.cpp
+    src/App/App.cpp
 )
 
 set(LIBS
