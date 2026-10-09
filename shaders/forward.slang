@@ -30,6 +30,8 @@ struct VertexOutput {
     float3 lightDir;
     float3 viewDir;
     nointerpolation uint materialIndex;
+    float4 currentClipPos : CLIP_POS;
+    float4 previousClipPos : PREV_CLIP_POS;
 };
 
 [[vk::push_constant]]
@@ -59,11 +61,18 @@ VertexOutput vertexMain(uint vertexIndex: SV_VertexID) {
     output.lightDir = g_lightPos.xyz - worldPos.xyz;
     output.viewDir  = -viewPos.xyz;
     output.materialIndex = vertex.materialIndex;
+    output.currentClipPos = output.position;
+    output.previousClipPos = mul(pushConstants.prevViewProjection, mul(model, float4(vertex.position, 1.0)));
     return output;
 }
 
+struct FragmentOutput {
+    float4 color    : SV_Target0;
+    float2 velocity : SV_Target1;
+};
+
 [shader("fragment")]
-float4 fragmentMain(VertexOutput vertex) : SV_Target {
+FragmentOutput fragmentMain(VertexOutput vertex) {
     Material material = pushConstants.materialBuffer[vertex.materialIndex];
 
     float4 baseColor = float4(1.0, 1.0, 1.0, 1.0);
@@ -91,5 +100,14 @@ float4 fragmentMain(VertexOutput vertex) : SV_Target {
     float3 specular = g_specularStrength * specularFactor * g_lightColor;
 
     float3 result = ambient + specular + diffuse;
-    return float4(result, 1.0);
+
+    FragmentOutput output;
+    output.color = float4(result, 1.0);
+
+    // Compute screen-space motion vector (NDC delta, scaled to [-0.5, 0.5])
+    float2 currentNDC = vertex.currentClipPos.xy / vertex.currentClipPos.w;
+    float2 previousNDC = vertex.previousClipPos.xy / vertex.previousClipPos.w;
+    output.velocity = (currentNDC - previousNDC) * 0.5;
+
+    return output;
 }

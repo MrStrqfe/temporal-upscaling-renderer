@@ -24,6 +24,7 @@ public:
     VkCommandPool getCommandPool() const;
     VkExtent2D getSwapchainExtent() const;
     VkFormat getSwapchainFormat() const;
+    void setVelocityTarget(VkImageView velocityImageView, VkImage velocityImage);
     void cleanup();
 
 private:
@@ -77,6 +78,9 @@ private:
     VmaAllocation                m_materialAllocation      {VK_NULL_HANDLE};
     VmaAllocationInfo            m_materialAllocationInfo  {};
     VkDeviceAddress              m_materialBufferAddress   {};
+    // velocity render target (owned by MotionVectors, set via setVelocityTarget)
+    VkImageView                  m_velocityImageView       {VK_NULL_HANDLE};
+    VkImage                      m_velocityImage           {VK_NULL_HANDLE};
     // extensions
     std::vector<const char *>    m_requiredDeviceExtensions{
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,

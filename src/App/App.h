@@ -4,6 +4,7 @@
 #include "Input/Input.h"
 #include "Camera/Camera.h"
 #include "ModelLoader/ModelLoader.h"
+#include "MotionVectors/MotionVectors.h"
 #include "Material.h"
 #include "Vertex.h"
 #include <cstdint>
@@ -19,6 +20,7 @@ private:
     Renderer              m_renderer{};
     Camera                m_camera{};
     ModelLoader           m_modelLoader{};
+    MotionVectors         m_motionVectors{};
     std::vector<Vertex>   m_vertices{};
     std::vector<uint32_t> m_indices{};
     std::vector<Material> m_materials{};

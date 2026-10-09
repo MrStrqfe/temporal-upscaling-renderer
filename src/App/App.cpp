@@ -17,6 +17,9 @@ void App::run() {
         static_cast<float>(m_renderer.getSwapchainExtent().height)
     );
 
+    m_motionVectors.init(m_renderer);
+    m_renderer.setVelocityTarget(m_motionVectors.getImageView(), m_motionVectors.getImage());
+
     m_modelLoader.loadModel(m_vertices, m_indices, m_materials, m_renderer);
     m_renderer.uploadModel(m_vertices, m_indices);
     m_renderer.uploadMaterials(m_materials);
@@ -43,6 +46,7 @@ void App::mainLoop() {
 }
 
 void App::cleanup() {
+    m_motionVectors.cleanup(m_renderer);
     m_renderer.cleanup();
     m_window.cleanup();
 }

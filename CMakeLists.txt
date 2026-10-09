@@ -93,6 +93,7 @@ set(SOURCE
     src/Camera/Camera.cpp
     src/Renderer/Renderer.cpp
     src/ModelLoader/ModelLoader.cpp
+    src/MotionVectors/MotionVectors.cpp
     src/App/App.cpp
 )
 

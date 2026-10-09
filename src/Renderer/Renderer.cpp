@@ -37,6 +37,11 @@ VkCommandPool     Renderer::getCommandPool()      const { return m_commandPool; 
 VkExtent2D        Renderer::getSwapchainExtent()  const { return m_swapchainExtent; }
 VkFormat          Renderer::getSwapchainFormat()  const { return m_swapchainSurfaceFormat.format; }
 
+void Renderer::setVelocityTarget(VkImageView velocityImageView, VkImage velocityImage) {
+    m_velocityImageView = velocityImageView;
+    m_velocityImage     = velocityImage;
+}
+
 // ─── Public init ─────────────────────────────────────────────────────────────
 
 void Renderer::initVulkan(Window &window) {
@@ -826,18 +831,25 @@ void Renderer::createGraphicsPipeline() {
         .stencilTestEnable     = VK_FALSE
     };
 
-    VkPipelineColorBlendAttachmentState colorBlendAttachment{
-        .blendEnable    = VK_FALSE,
-        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                          VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
-    };
+    // Two blend attachments: [0] = swapchain color, [1] = velocity (RG16F)
+    std::array<VkPipelineColorBlendAttachmentState, 2> colorBlendAttachments{{
+        {
+            .blendEnable    = VK_FALSE,
+            .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
+        },
+        {
+            .blendEnable    = VK_FALSE,
+            .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
+        }
+    }};
 
     VkPipelineColorBlendStateCreateInfo colorBlendState{
         .sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         .pNext           = nullptr,
         .logicOpEnable   = VK_FALSE,
-        .attachmentCount = 1,
-        .pAttachments    = &colorBlendAttachment
+        .attachmentCount = static_cast<uint32_t>(colorBlendAttachments.size()),
+        .pAttachments    = colorBlendAttachments.data()
     };
 
     // Push constants
@@ -860,11 +872,16 @@ void Renderer::createGraphicsPipeline() {
         "Error: failed to create pipeline layout");
 
     // Dynamic rendering (no render pass object)
+    std::array<VkFormat, 2> colorAttachmentFormats{
+        m_swapchainSurfaceFormat.format,
+        VK_FORMAT_R16G16_SFLOAT
+    };
+
     VkPipelineRenderingCreateInfo pipelineRenderingCreateInfo{
         .sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
         .pNext                   = nullptr,
-        .colorAttachmentCount    = 1,
-        .pColorAttachmentFormats = &m_swapchainSurfaceFormat.format,
+        .colorAttachmentCount    = static_cast<uint32_t>(colorAttachmentFormats.size()),
+        .pColorAttachmentFormats = colorAttachmentFormats.data(),
         .depthAttachmentFormat   = VK_FORMAT_D32_SFLOAT
     };
 
@@ -1021,7 +1038,7 @@ void Renderer::drawFrame(Window &window, Camera &camera) {
     };
     vkBeginCommandBuffer(cmd, &beginInfo);
 
-    // Transition swapchain image: UNDEFINED → COLOR_ATTACHMENT_OPTIMAL
+    // Transition swapchain image + velocity image: UNDEFINED → COLOR_ATTACHMENT_OPTIMAL
     VkImageMemoryBarrier2 colorToAttach{
         .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext               = nullptr,
@@ -1036,11 +1053,29 @@ void Renderer::drawFrame(Window &window, Camera &camera) {
         .image               = m_swapchainImages[imageIndex],
         .subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
     };
+
+    VkImageMemoryBarrier2 velocityToAttach{
+        .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .pNext               = nullptr,
+        .srcStageMask        = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+        .srcAccessMask       = VK_ACCESS_2_NONE,
+        .dstStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask       = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image               = m_velocityImage,
+        .subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
+    };
+
+    // Batch swapchain color + velocity barriers together
+    std::array<VkImageMemoryBarrier2, 2> preRenderBarriers{colorToAttach, velocityToAttach};
     VkDependencyInfo colorBarrierDep{
         .sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
         .pNext                   = nullptr,
-        .imageMemoryBarrierCount = 1,
-        .pImageMemoryBarriers    = &colorToAttach
+        .imageMemoryBarrierCount = static_cast<uint32_t>(preRenderBarriers.size()),
+        .pImageMemoryBarriers    = preRenderBarriers.data()
     };
     vkCmdPipelineBarrier2(cmd, &colorBarrierDep);
 
@@ -1069,6 +1104,7 @@ void Renderer::drawFrame(Window &window, Camera &camera) {
 
     // Begin dynamic rendering
     VkClearValue clearColor{.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}};
+    VkClearValue clearVelocity{.color = {.float32 = {0.0f, 0.0f, 0.0f, 0.0f}}};
     VkClearValue clearDepth{.depthStencil = {1.0f, 0}};
 
     VkRenderingAttachmentInfo colorAttachment{
@@ -1081,6 +1117,16 @@ void Renderer::drawFrame(Window &window, Camera &camera) {
         .clearValue  = clearColor
     };
 
+    VkRenderingAttachmentInfo velocityAttachment{
+        .sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .pNext       = nullptr,
+        .imageView   = m_velocityImageView,
+        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp     = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue  = clearVelocity
+    };
+
     VkRenderingAttachmentInfo depthAttachment{
         .sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .pNext       = nullptr,
@@ -1091,13 +1137,15 @@ void Renderer::drawFrame(Window &window, Camera &camera) {
         .clearValue  = clearDepth
     };
 
+    std::array<VkRenderingAttachmentInfo, 2> colorAttachments{colorAttachment, velocityAttachment};
+
     VkRenderingInfo renderingInfo{
         .sType                = VK_STRUCTURE_TYPE_RENDERING_INFO,
         .pNext                = nullptr,
         .renderArea           = {.offset = {0, 0}, .extent = m_swapchainExtent},
         .layerCount           = 1,
-        .colorAttachmentCount = 1,
-        .pColorAttachments    = &colorAttachment,
+        .colorAttachmentCount = static_cast<uint32_t>(colorAttachments.size()),
+        .pColorAttachments    = colorAttachments.data(),
         .pDepthAttachment     = &depthAttachment
     };
 
