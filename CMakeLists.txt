@@ -88,6 +88,8 @@ endif()
 # source files — starts minimal; later tasks add their own sources
 set(SOURCE
     src/main.cpp
+    src/Window/Window.cpp
+    src/Input/Input.cpp
 )
 
 set(LIBS
