@@ -425,6 +425,7 @@ void Renderer::createDevice() {
         .pNext                                     = &vulkan11Features,
         .descriptorIndexing                        = VK_TRUE,
         .shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
+        .descriptorBindingSampledImageUpdateAfterBind = VK_TRUE,
         .descriptorBindingPartiallyBound           = VK_TRUE,
         .runtimeDescriptorArray                    = VK_TRUE,
         .scalarBlockLayout                         = VK_TRUE,
@@ -438,6 +439,11 @@ void Renderer::createDevice() {
         .dynamicRendering = VK_TRUE
     };
 
+    VkPhysicalDeviceFeatures deviceFeatures{
+        .independentBlend  = VK_TRUE,
+        .samplerAnisotropy = VK_TRUE
+    };
+
     VkDeviceCreateInfo deviceCreateInfo{
         .sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext                   = &vulkan13Features,
@@ -445,7 +451,7 @@ void Renderer::createDevice() {
         .pQueueCreateInfos       = &queueCreateInfo,
         .enabledExtensionCount   = static_cast<uint32_t>(m_requiredDeviceExtensions.size()),
         .ppEnabledExtensionNames = m_requiredDeviceExtensions.data(),
-        .pEnabledFeatures        = nullptr
+        .pEnabledFeatures        = &deviceFeatures
     };
 
     checkResult(vkCreateDevice(m_physicalDevice, &deviceCreateInfo, nullptr, &m_device),
@@ -828,14 +834,14 @@ void Renderer::createGraphicsPipeline() {
             .pNext  = nullptr,
             .stage  = VK_SHADER_STAGE_VERTEX_BIT,
             .module = vertModule,
-            .pName  = "vertexMain"
+            .pName  = "main"
         },
         {
             .sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
             .pNext  = nullptr,
             .stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
             .module = fragModule,
-            .pName  = "fragmentMain"
+            .pName  = "main"
         }
     }};
 
@@ -1020,7 +1026,8 @@ void Renderer::createCommandBuffers() {
 void Renderer::createSyncObjects() {
     m_renderWaitFences.resize(Config::maxFramesInFlight);
     m_acquireImageSemaphores.resize(Config::maxFramesInFlight);
-    m_renderFinishedSemaphores.resize(Config::maxFramesInFlight);
+    // one per swapchain image: presentation may still hold a semaphore after its frame's fence signals
+    m_renderFinishedSemaphores.resize(m_swapchainImages.size());
 
     VkFenceCreateInfo fenceCreateInfo{
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
@@ -1039,7 +1046,9 @@ void Renderer::createSyncObjects() {
             "Error: failed to create render fence");
         checkResult(vkCreateSemaphore(m_device, &semaphoreCreateInfo, nullptr, &m_acquireImageSemaphores[i]),
             "Error: failed to create acquire semaphore");
-        checkResult(vkCreateSemaphore(m_device, &semaphoreCreateInfo, nullptr, &m_renderFinishedSemaphores[i]),
+    }
+    for (VkSemaphore &semaphore : m_renderFinishedSemaphores) {
+        checkResult(vkCreateSemaphore(m_device, &semaphoreCreateInfo, nullptr, &semaphore),
             "Error: failed to create render finished semaphore");
     }
 }
@@ -1428,7 +1437,7 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
     VkSemaphoreSubmitInfo signalSemaphoreInfo{
         .sType     = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
         .pNext     = nullptr,
-        .semaphore = m_renderFinishedSemaphores[m_frameIndex],
+        .semaphore = m_renderFinishedSemaphores[imageIndex],
         .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
     };
     VkCommandBufferSubmitInfo cmdSubmitInfo{
@@ -1455,7 +1464,7 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
         .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .pNext              = nullptr,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores    = &m_renderFinishedSemaphores[m_frameIndex],
+        .pWaitSemaphores    = &m_renderFinishedSemaphores[imageIndex],
         .swapchainCount     = 1,
         .pSwapchains        = &m_swapchain,
         .pImageIndices      = &imageIndex,
@@ -1518,7 +1527,9 @@ void Renderer::syncObjectCleanup() {
     for (size_t i{}; i < Config::maxFramesInFlight; ++i) {
         vkDestroyFence(m_device, m_renderWaitFences[i], nullptr);
         vkDestroySemaphore(m_device, m_acquireImageSemaphores[i], nullptr);
-        vkDestroySemaphore(m_device, m_renderFinishedSemaphores[i], nullptr);
+    }
+    for (VkSemaphore semaphore : m_renderFinishedSemaphores) {
+        vkDestroySemaphore(m_device, semaphore, nullptr);
     }
     m_renderWaitFences.clear();
     m_acquireImageSemaphores.clear();

@@ -1,10 +1,12 @@
 [[vk::binding(0, 0)]] Sampler2D inputTex;
 [[vk::binding(1, 0)]] RWTexture2D<float4> outputTex;
 
-[[vk::push_constant]]
 struct PushConstants {
     float sharpenStrength;
-} pc;
+};
+
+[[vk::push_constant]]
+PushConstants pc;
 
 [shader("compute")]
 [numthreads(8, 8, 1)]

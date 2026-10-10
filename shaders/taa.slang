@@ -5,10 +5,12 @@
 [[vk::binding(4, 0)]] RWTexture2D<float4> outputTex;
 [[vk::binding(5, 0)]] RWTexture2D<float4> historyWriteTex;
 
-[[vk::push_constant]]
-struct {
+struct PushConstants {
     float blendFactor;
-} pc;
+};
+
+[[vk::push_constant]]
+PushConstants pc;
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
