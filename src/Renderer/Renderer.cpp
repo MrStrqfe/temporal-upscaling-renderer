@@ -541,13 +541,9 @@ void Renderer::createSwapchain(Window &window) {
     std::vector<VkPresentModeKHR> presentModes(presentModeCount);
     vkGetPhysicalDeviceSurfacePresentModesKHR(m_physicalDevice, m_surface, &presentModeCount, presentModes.data());
 
+    // FIFO, not mailbox: frame interpolation queues two presents back to back, and mailbox
+    // would replace the interpolated frame with the real one before it is ever displayed
     VkPresentModeKHR presentMode{VK_PRESENT_MODE_FIFO_KHR};
-    for (const auto &mode : presentModes) {
-        if (mode == VK_PRESENT_MODE_MAILBOX_KHR) {
-            presentMode = mode;
-            break;
-        }
-    }
 
     // Choose extent
     if (surfaceCapabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
@@ -1025,7 +1021,7 @@ void Renderer::createCommandBuffers() {
 
 void Renderer::createSyncObjects() {
     m_renderWaitFences.resize(Config::maxFramesInFlight);
-    m_acquireImageSemaphores.resize(Config::maxFramesInFlight);
+    m_acquireImageSemaphores.resize(Config::maxFramesInFlight * m_maxPresentsPerFrame);
     // one per swapchain image: presentation may still hold a semaphore after its frame's fence signals
     m_renderFinishedSemaphores.resize(m_swapchainImages.size());
 
@@ -1044,7 +1040,9 @@ void Renderer::createSyncObjects() {
     for (size_t i{}; i < Config::maxFramesInFlight; ++i) {
         checkResult(vkCreateFence(m_device, &fenceCreateInfo, nullptr, &m_renderWaitFences[i]),
             "Error: failed to create render fence");
-        checkResult(vkCreateSemaphore(m_device, &semaphoreCreateInfo, nullptr, &m_acquireImageSemaphores[i]),
+    }
+    for (VkSemaphore &semaphore : m_acquireImageSemaphores) {
+        checkResult(vkCreateSemaphore(m_device, &semaphoreCreateInfo, nullptr, &semaphore),
             "Error: failed to create acquire semaphore");
     }
     for (VkSemaphore &semaphore : m_renderFinishedSemaphores) {
@@ -1079,23 +1077,34 @@ void Renderer::createBuffer(VkBuffer &buffer, VkDeviceSize size, VkBufferUsageFl
 
 // ─── drawFrame ────────────────────────────────────────────────────────────────
 
-void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *postProcess, MotionVectors *motionVectors) {
+void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *postProcess, MotionVectors *motionVectors,
+                         PostProcessMode mode) {
     // Wait for this frame slot's fence
     vkWaitForFences(m_device, 1, &m_renderWaitFences[m_frameIndex], VK_TRUE, UINT64_MAX);
 
-    // Acquire swapchain image
-    uint32_t imageIndex{};
-    VkResult acquireResult{vkAcquireNextImageKHR(
-        m_device, m_swapchain, UINT64_MAX,
-        m_acquireImageSemaphores[m_frameIndex],
-        VK_NULL_HANDLE, &imageIndex)};
+    bool usePostProcess{postProcess != nullptr && motionVectors != nullptr && mode != PostProcessMode::Native};
 
-    if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
-        recreateSwapchain(window);
-        return;
-    }
-    if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
-        throw std::runtime_error("Error: failed to acquire swapchain image");
+    // Acquire swapchain images — two when presenting an interpolated frame before the real one
+    uint32_t presentCount{(usePostProcess && postProcess->willInterpolate(mode)) ? 2u : 1u};
+    std::array<uint32_t, m_maxPresentsPerFrame> imageIndices{};
+    for (uint32_t i{}; i < presentCount; ++i) {
+        VkResult acquireResult{vkAcquireNextImageKHR(
+            m_device, m_swapchain, UINT64_MAX,
+            m_acquireImageSemaphores[m_frameIndex * m_maxPresentsPerFrame + i],
+            VK_NULL_HANDLE, &imageIndices[i])};
+
+        if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+            if (i == 0) {
+                recreateSwapchain(window);
+                return;
+            }
+            // Keep the image already acquired and present only the real frame this time
+            presentCount = 1;
+            break;
+        }
+        if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+            throw std::runtime_error("Error: failed to acquire swapchain image");
+        }
     }
 
     vkResetFences(m_device, 1, &m_renderWaitFences[m_frameIndex]);
@@ -1114,7 +1123,8 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
     VkImageMemoryBarrier2 colorToAttach{
         .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext               = nullptr,
-        .srcStageMask        = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+        // Last frame's compute passes and blit read these; finish before discarding
+        .srcStageMask        = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
         .srcAccessMask       = VK_ACCESS_2_NONE,
         .dstStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
         .dstAccessMask       = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -1129,7 +1139,8 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
     VkImageMemoryBarrier2 velocityToAttach{
         .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext               = nullptr,
-        .srcStageMask        = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+        // Last frame's compute passes and blit read these; finish before discarding
+        .srcStageMask        = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
         .srcAccessMask       = VK_ACCESS_2_NONE,
         .dstStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
         .dstAccessMask       = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -1155,7 +1166,8 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
     VkImageMemoryBarrier2 depthToAttach{
         .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext               = nullptr,
-        .srcStageMask        = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+        // Last frame's compute passes and blit read these; finish before discarding
+        .srcStageMask        = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
         .srcAccessMask       = VK_ACCESS_2_NONE,
         .dstStageMask        = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
         .dstAccessMask       = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
@@ -1326,10 +1338,9 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
     vkCmdPipelineBarrier2(cmd, &postForwardDep);
 
     // ─── Execute post-process ─────────────────────────────────────────────
-    PostProcessMode mode{PostProcessMode::Upscale};
     VkImage blitSourceImage{};
     VkImageLayout blitSourceLayout{};
-    if (postProcess != nullptr && motionVectors != nullptr && mode != PostProcessMode::Native) {
+    if (usePostProcess) {
         postProcess->execute(cmd, *this, mode,
                              m_colorImageView, m_depthImageView, motionVectors->getImageView());
         blitSourceImage = postProcess->getOutputImage();
@@ -1340,30 +1351,61 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
         blitSourceLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 
-    // ─── Blit TAA output (or color) → swapchain ─────────────────────────────
-    // Transition output: GENERAL → TRANSFER_SRC_OPTIMAL (after compute write)
-    // Transition swapchain: UNDEFINED → TRANSFER_DST_OPTIMAL
-    std::array<VkImageMemoryBarrier2, 2> preBlitBarriers{{
-        {
+    // ─── Blit presented frames → swapchain ───────────────────────────────────
+    // With frame interpolation the generated midpoint frame goes first, then the real frame
+    struct PresentSource {
+        VkImage               image;
+        VkImageLayout         layout;
+        VkPipelineStageFlags2 stage;
+        VkAccessFlags2        access;
+        VkExtent2D            extent;
+    };
+    PresentSource realFrame{
+        .image  = blitSourceImage,
+        .layout = blitSourceLayout,
+        .stage  = (blitSourceLayout == VK_IMAGE_LAYOUT_GENERAL)
+                    ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                    : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .access = (blitSourceLayout == VK_IMAGE_LAYOUT_GENERAL)
+                    ? VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                    : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        // Native mode blits the internal-resolution color target straight to the swapchain
+        .extent = (blitSourceLayout == VK_IMAGE_LAYOUT_GENERAL) ? m_swapchainExtent : getInternalExtent()
+    };
+    std::array<PresentSource, m_maxPresentsPerFrame> presentSources{realFrame};
+    if (presentCount == 2) {
+        presentSources = {
+            PresentSource{
+                .image  = postProcess->getInterpolatedImage(),
+                .layout = VK_IMAGE_LAYOUT_GENERAL,
+                .stage  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .access = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                .extent = m_swapchainExtent
+            },
+            realFrame
+        };
+    }
+
+    // Sources → TRANSFER_SRC_OPTIMAL, swapchain images → TRANSFER_DST_OPTIMAL.
+    // Swapchain barriers start at BLIT to chain with the acquire semaphore wait.
+    std::vector<VkImageMemoryBarrier2> preBlitBarriers{};
+    for (uint32_t i{}; i < presentCount; ++i) {
+        preBlitBarriers.push_back({
             .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask        = (blitSourceLayout == VK_IMAGE_LAYOUT_GENERAL)
-                                     ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
-                                     : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .srcAccessMask       = (blitSourceLayout == VK_IMAGE_LAYOUT_GENERAL)
-                                     ? VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
-                                     : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_BLIT_BIT,
+            .srcStageMask        = presentSources[i].stage,
+            .srcAccessMask       = presentSources[i].access,
+            .dstStageMask        = VK_PIPELINE_STAGE_2_BLIT_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
             .dstAccessMask       = VK_ACCESS_2_TRANSFER_READ_BIT,
-            .oldLayout           = blitSourceLayout,
+            .oldLayout           = presentSources[i].layout,
             .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = blitSourceImage,
+            .image               = presentSources[i].image,
             .subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
-        },
-        {
+        });
+        preBlitBarriers.push_back({
             .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            .srcStageMask        = VK_PIPELINE_STAGE_2_BLIT_BIT,
             .srcAccessMask       = VK_ACCESS_2_NONE,
             .dstStageMask        = VK_PIPELINE_STAGE_2_BLIT_BIT,
             .dstAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -1371,10 +1413,10 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
             .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = m_swapchainImages[imageIndex],
+            .image               = m_swapchainImages[imageIndices[i]],
             .subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
-        }
-    }};
+        });
+    }
     VkDependencyInfo preBlitDep{
         .sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
         .imageMemoryBarrierCount = static_cast<uint32_t>(preBlitBarriers.size()),
@@ -1383,63 +1425,78 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
     vkCmdPipelineBarrier2(cmd, &preBlitDep);
 
     // Blit
-    VkImageBlit2 blitRegion{
-        .sType          = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
-        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-        .srcOffsets     = {{0, 0, 0}, {static_cast<int32_t>(m_swapchainExtent.width), static_cast<int32_t>(m_swapchainExtent.height), 1}},
-        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-        .dstOffsets     = {{0, 0, 0}, {static_cast<int32_t>(m_swapchainExtent.width), static_cast<int32_t>(m_swapchainExtent.height), 1}}
-    };
-    VkBlitImageInfo2 blitInfo{
-        .sType          = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2,
-        .srcImage       = blitSourceImage,
-        .srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        .dstImage       = m_swapchainImages[imageIndex],
-        .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .regionCount    = 1,
-        .pRegions       = &blitRegion,
-        .filter         = VK_FILTER_LINEAR
-    };
-    vkCmdBlitImage2(cmd, &blitInfo);
+    for (uint32_t i{}; i < presentCount; ++i) {
+        VkExtent2D srcExtent{presentSources[i].extent};
+        VkImageBlit2 blitRegion{
+            .sType          = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
+            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .srcOffsets     = {{0, 0, 0}, {static_cast<int32_t>(srcExtent.width), static_cast<int32_t>(srcExtent.height), 1}},
+            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .dstOffsets     = {{0, 0, 0}, {static_cast<int32_t>(m_swapchainExtent.width), static_cast<int32_t>(m_swapchainExtent.height), 1}}
+        };
+        VkBlitImageInfo2 blitInfo{
+            .sType          = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2,
+            .srcImage       = presentSources[i].image,
+            .srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .dstImage       = m_swapchainImages[imageIndices[i]],
+            .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .regionCount    = 1,
+            .pRegions       = &blitRegion,
+            .filter         = VK_FILTER_LINEAR
+        };
+        vkCmdBlitImage2(cmd, &blitInfo);
+    }
 
-    // Transition swapchain image: TRANSFER_DST_OPTIMAL → PRESENT_SRC_KHR
-    VkImageMemoryBarrier2 colorToPresent{
-        .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .pNext               = nullptr,
-        .srcStageMask        = VK_PIPELINE_STAGE_2_BLIT_BIT,
-        .srcAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .dstStageMask        = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-        .dstAccessMask       = VK_ACCESS_2_NONE,
-        .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .newLayout           = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image               = m_swapchainImages[imageIndex],
-        .subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
-    };
+    // The real frame becomes frame N for the next interpolation
+    if (usePostProcess && mode == PostProcessMode::FrameInterp) {
+        postProcess->recordPreviousFrameCopy(cmd, *this);
+    }
+
+    // Transition swapchain images: TRANSFER_DST_OPTIMAL → PRESENT_SRC_KHR
+    std::vector<VkImageMemoryBarrier2> presentBarriers{};
+    for (uint32_t i{}; i < presentCount; ++i) {
+        presentBarriers.push_back({
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .pNext               = nullptr,
+            .srcStageMask        = VK_PIPELINE_STAGE_2_BLIT_BIT,
+            .srcAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask        = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            .dstAccessMask       = VK_ACCESS_2_NONE,
+            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout           = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = m_swapchainImages[imageIndices[i]],
+            .subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
+        });
+    }
     VkDependencyInfo presentBarrierDep{
         .sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
         .pNext                   = nullptr,
-        .imageMemoryBarrierCount = 1,
-        .pImageMemoryBarriers    = &colorToPresent
+        .imageMemoryBarrierCount = static_cast<uint32_t>(presentBarriers.size()),
+        .pImageMemoryBarriers    = presentBarriers.data()
     };
     vkCmdPipelineBarrier2(cmd, &presentBarrierDep);
 
     vkEndCommandBuffer(cmd);
 
-    // Submit
-    VkSemaphoreSubmitInfo waitSemaphoreInfo{
-        .sType     = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-        .pNext     = nullptr,
-        .semaphore = m_acquireImageSemaphores[m_frameIndex],
-        .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
-    };
-    VkSemaphoreSubmitInfo signalSemaphoreInfo{
-        .sType     = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-        .pNext     = nullptr,
-        .semaphore = m_renderFinishedSemaphores[imageIndex],
-        .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
-    };
+    // Submit — wait on every acquire, signal one render-finished semaphore per presented image
+    std::array<VkSemaphoreSubmitInfo, m_maxPresentsPerFrame> waitSemaphoreInfos{};
+    std::array<VkSemaphoreSubmitInfo, m_maxPresentsPerFrame> signalSemaphoreInfos{};
+    for (uint32_t i{}; i < presentCount; ++i) {
+        waitSemaphoreInfos[i] = {
+            .sType     = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .pNext     = nullptr,
+            .semaphore = m_acquireImageSemaphores[m_frameIndex * m_maxPresentsPerFrame + i],
+            .stageMask = VK_PIPELINE_STAGE_2_BLIT_BIT
+        };
+        signalSemaphoreInfos[i] = {
+            .sType     = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .pNext     = nullptr,
+            .semaphore = m_renderFinishedSemaphores[imageIndices[i]],
+            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT
+        };
+    }
     VkCommandBufferSubmitInfo cmdSubmitInfo{
         .sType         = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
         .pNext         = nullptr,
@@ -1449,33 +1506,39 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
     VkSubmitInfo2 submitInfo{
         .sType                    = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
         .pNext                    = nullptr,
-        .waitSemaphoreInfoCount   = 1,
-        .pWaitSemaphoreInfos      = &waitSemaphoreInfo,
+        .waitSemaphoreInfoCount   = presentCount,
+        .pWaitSemaphoreInfos      = waitSemaphoreInfos.data(),
         .commandBufferInfoCount   = 1,
         .pCommandBufferInfos      = &cmdSubmitInfo,
-        .signalSemaphoreInfoCount = 1,
-        .pSignalSemaphoreInfos    = &signalSemaphoreInfo
+        .signalSemaphoreInfoCount = presentCount,
+        .pSignalSemaphoreInfos    = signalSemaphoreInfos.data()
     };
     checkResult(vkQueueSubmit2(m_queue, 1, &submitInfo, m_renderWaitFences[m_frameIndex]),
         "Error: failed to submit command buffer");
 
-    // Present
-    VkPresentInfoKHR presentInfo{
-        .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-        .pNext              = nullptr,
-        .waitSemaphoreCount = 1,
-        .pWaitSemaphores    = &m_renderFinishedSemaphores[imageIndex],
-        .swapchainCount     = 1,
-        .pSwapchains        = &m_swapchain,
-        .pImageIndices      = &imageIndex,
-        .pResults           = nullptr
-    };
-    VkResult presentResult{vkQueuePresentKHR(m_queue, &presentInfo)};
+    // Present in order; under FIFO each is shown for its own vblank
+    bool swapchainStale{false};
+    for (uint32_t i{}; i < presentCount; ++i) {
+        VkPresentInfoKHR presentInfo{
+            .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .pNext              = nullptr,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores    = &m_renderFinishedSemaphores[imageIndices[i]],
+            .swapchainCount     = 1,
+            .pSwapchains        = &m_swapchain,
+            .pImageIndices      = &imageIndices[i],
+            .pResults           = nullptr
+        };
+        VkResult presentResult{vkQueuePresentKHR(m_queue, &presentInfo)};
 
-    if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
+        if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
+            swapchainStale = true;
+        } else if (presentResult != VK_SUCCESS) {
+            throw std::runtime_error("Error: failed to present swapchain image");
+        }
+    }
+    if (swapchainStale) {
         recreateSwapchain(window);
-    } else if (presentResult != VK_SUCCESS) {
-        throw std::runtime_error("Error: failed to present swapchain image");
     }
 
     m_frameIndex = (m_frameIndex + 1) % Config::maxFramesInFlight;
@@ -1526,7 +1589,9 @@ void Renderer::swapchainCleanup() {
 void Renderer::syncObjectCleanup() {
     for (size_t i{}; i < Config::maxFramesInFlight; ++i) {
         vkDestroyFence(m_device, m_renderWaitFences[i], nullptr);
-        vkDestroySemaphore(m_device, m_acquireImageSemaphores[i], nullptr);
+    }
+    for (VkSemaphore semaphore : m_acquireImageSemaphores) {
+        vkDestroySemaphore(m_device, semaphore, nullptr);
     }
     for (VkSemaphore semaphore : m_renderFinishedSemaphores) {
         vkDestroySemaphore(m_device, semaphore, nullptr);

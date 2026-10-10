@@ -39,10 +39,15 @@ void App::mainLoop() {
 
         m_window.pollEvents();
         m_input.processUserInput(m_window);
+        // Temporary mode keys until the debug UI's mode selector exists
+        if (m_window.isKeyPressed(GLFW_KEY_1)) m_mode = PostProcessMode::Native;
+        if (m_window.isKeyPressed(GLFW_KEY_2)) m_mode = PostProcessMode::TAA;
+        if (m_window.isKeyPressed(GLFW_KEY_3)) m_mode = PostProcessMode::Upscale;
+        if (m_window.isKeyPressed(GLFW_KEY_4)) m_mode = PostProcessMode::FrameInterp;
         m_camera.processKeyboard(m_window, m_deltaTime);
         m_camera.update();
 
-        m_renderer.drawFrame(m_window, m_camera, &m_postProcess, &m_motionVectors);
+        m_renderer.drawFrame(m_window, m_camera, &m_postProcess, &m_motionVectors, m_mode);
 
         m_camera.incrementFrameIndex();
     }

@@ -81,6 +81,7 @@ compile_slang_shader(taa main compute)
 # Upscale and sharpen compute shaders
 compile_slang_shader(upscale main compute)
 compile_slang_shader(sharpen main compute)
+compile_slang_shader(frame_interp main compute)
 
 # Compile all shaders — only lists .spv outputs when slangc is available
 if (SLANGC_PATH)
@@ -90,6 +91,7 @@ if (SLANGC_PATH)
         ${SHADER_OUTPUT_DIR}/taa_compute.spv
         ${SHADER_OUTPUT_DIR}/upscale_compute.spv
         ${SHADER_OUTPUT_DIR}/sharpen_compute.spv
+        ${SHADER_OUTPUT_DIR}/frame_interp_compute.spv
     )
 else()
     add_custom_target(compile_shaders)
@@ -108,6 +110,7 @@ set(SOURCE
     src/PostProcess/TAAPass.cpp
     src/PostProcess/UpscalePass.cpp
     src/PostProcess/SharpenPass.cpp
+    src/PostProcess/FrameInterp.cpp
     src/App/App.cpp
 )
 

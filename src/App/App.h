@@ -28,6 +28,7 @@ private:
     std::vector<Material> m_materials{};
     float                 m_deltaTime{0.0f};
     float                 m_lastFrame{0.0f};
+    PostProcessMode       m_mode{PostProcessMode::Upscale};
 
     void mainLoop();
     void cleanup();

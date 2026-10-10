@@ -8,13 +8,15 @@ class Window;
 class Camera;
 class PostProcessPipeline;
 class MotionVectors;
+enum class PostProcessMode;
 struct Vertex;
 struct Material;
 
 class Renderer {
 public:
     void initVulkan(Window &window);
-    void drawFrame(Window &window, Camera &camera, PostProcessPipeline *postProcess, MotionVectors *motionVectors);
+    void drawFrame(Window &window, Camera &camera, PostProcessPipeline *postProcess, MotionVectors *motionVectors,
+                   PostProcessMode mode);
     void uploadModel(std::vector<Vertex> &vertices, std::vector<uint32_t> &indices);
     uint32_t uploadTexture(const std::string &path, VkFormat format);
     void uploadMaterials(std::vector<Material> &materials);
@@ -66,6 +68,8 @@ private:
     std::vector<VkSemaphore>     m_acquireImageSemaphores  {};
     std::vector<VkSemaphore>     m_renderFinishedSemaphores{};
     uint32_t                     m_frameIndex              {};
+    // frame interpolation presents the generated frame and the real frame from one drawFrame
+    static constexpr uint32_t    m_maxPresentsPerFrame     {2};
     // model data
     VkBuffer                     m_vertexBuffer            {VK_NULL_HANDLE};
     VmaAllocation                m_vertexAllocation        {VK_NULL_HANDLE};

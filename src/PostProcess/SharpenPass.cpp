@@ -117,7 +117,8 @@ void SharpenPass::execute(VkCommandBuffer cmd,
         },
         {
             .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            // Contents are discarded, but the previous frame's compute/blit/copy reads must finish first
+            .srcStageMask        = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
             .srcAccessMask       = VK_ACCESS_2_NONE,
             .dstStageMask        = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             .dstAccessMask       = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
