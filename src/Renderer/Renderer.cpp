@@ -1262,9 +1262,8 @@ void Renderer::drawFrame(Window &window, Camera &camera, PostProcessPipeline *po
 
         vkCmdBindIndexBuffer(cmd, m_indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
-        glm::mat4 model{glm::translate(
-            glm::scale(glm::mat4(1.0f), glm::vec3(0.01f)),
-            glm::vec3(0.0f, -100.0f, 0.0f))};
+        // Model is ~2 units across, centered at the origin; the camera starts 3 units back
+        glm::mat4 model{1.0f};
 
         PushConstants pushConstants{
             .materialBufferAddress = m_materialBufferAddress,

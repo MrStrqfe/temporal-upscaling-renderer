@@ -20,6 +20,7 @@ void ModelLoader::loadModel(std::vector<Vertex> &vertices, std::vector<uint32_t>
     const aiScene *scene{importer.ReadFile(
         path,
         aiProcess_Triangulate |
+        aiProcess_PreTransformVertices |  // bake node transforms (the helmet's node rotates it upright)
         aiProcess_JoinIdenticalVertices |
         aiProcess_FlipUVs
     )};
