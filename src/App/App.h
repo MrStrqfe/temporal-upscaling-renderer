@@ -1,0 +1,35 @@
+#pragma once
+#include "Renderer/Renderer.h"
+#include "Window/Window.h"
+#include "Input/Input.h"
+#include "Camera/Camera.h"
+#include "ModelLoader/ModelLoader.h"
+#include "MotionVectors/MotionVectors.h"
+#include "PostProcess/PostProcessPipeline.h"
+#include "Material.h"
+#include "Vertex.h"
+#include <cstdint>
+#include <vector>
+
+class App {
+public:
+    void run();
+
+private:
+    Window                m_window{};
+    Input                 m_input{};
+    Renderer              m_renderer{};
+    Camera                m_camera{};
+    ModelLoader           m_modelLoader{};
+    MotionVectors         m_motionVectors{};
+    PostProcessPipeline   m_postProcess{};
+    std::vector<Vertex>   m_vertices{};
+    std::vector<uint32_t> m_indices{};
+    std::vector<Material> m_materials{};
+    float                 m_deltaTime{0.0f};
+    float                 m_lastFrame{0.0f};
+    PostProcessMode       m_mode{PostProcessMode::Upscale};
+
+    void mainLoop();
+    void cleanup();
+};
